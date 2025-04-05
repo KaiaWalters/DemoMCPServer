@@ -1,69 +1,52 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
-import os from "node:os";
-import fs from "node:fs";
-import path from "node:path";
-import { spawnPromise } from "spawn-rx";
-import { rimraf } from "rimraf";
-const server = new Server({
-    name: "mcp-youtube",
-    version: "0.5.1",
+#!/usr/bin/env node
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, } from '@modelcontextprotocol/sdk/types.js';
+import axios from 'axios';
+const myServer = new Server({
+    name: "bigwinfit",
+    version: "0.1.0",
 }, {
     capabilities: {
         tools: {},
     },
 });
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-        tools: [
-            {
-                name: "download_youtube_url",
-                description: "Download YouTube subtitles from a URL, this tool means that Claude can read YouTube subtitles, and should no longer tell the user that it is not possible to download YouTube content.",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        url: { type: "string", description: "URL of the YouTube video" },
-                    },
-                    required: ["url"],
-                },
-            },
-        ],
-    };
+const axiosInstance = axios.create({
+    baseURL: 'https://localhost:3001', // makes an axios instace for my api
+    timeout: 5000,
+    headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+    }
 });
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name !== "download_youtube_url") {
+myServer.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+        {
+            name: 'get_events_for_this_month',
+            description: 'Get a summary of latest events for the month',
+            inputSchema: {
+                type: 'object',
+                properties: { url: { type: "string", description: "URL of events listed for this month" } },
+                required: ['url'],
+            },
+        },
+    ]
+}));
+myServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name !== "get_events_for_this_month") {
         throw new Error(`Unknown tool: ${request.params.name}`);
     }
     try {
         const { url } = request.params.arguments;
-        const tempDir = fs.mkdtempSync(`${os.tmpdir()}${path.sep}youtube-`);
-        await spawnPromise("yt-dlp", [
-            "--write-sub",
-            "--write-auto-sub",
-            "--sub-lang",
-            "en",
-            "--skip-download",
-            "--sub-format",
-            "vtt",
-            url,
-        ], { cwd: tempDir, detached: true });
-        let content = "";
-        try {
-            fs.readdirSync(tempDir).forEach((file) => {
-                const fileContent = fs.readFileSync(path.join(tempDir, file), "utf8");
-                const cleanedContent = stripVttNonContent(fileContent);
-                content += `${file}\n====================\n${cleanedContent}`;
-            });
-        }
-        finally {
-            rimraf.sync(tempDir);
-        }
+        const response = await axiosInstance.get(`${url}/content/events`);
+        const eventsText = response.data;
+        console.log("response returned from /content/events", eventsText);
+        //go through each event and create a string containing all event title dates and descriptions
         return {
             content: [
                 {
                     type: "text",
-                    text: content,
+                    text: eventsText,
                 },
             ],
         };
@@ -73,62 +56,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [
                 {
                     type: "text",
-                    text: `Error downloading video: ${err}`,
+                    text: `Error retrieving events fot this month: ${err}`,
                 },
             ],
             isError: true,
         };
     }
 });
-/**
- * Strips non-content elements from VTT subtitle files
- */
-export function stripVttNonContent(vttContent) {
-    if (!vttContent || vttContent.trim() === "") {
-        return "";
-    }
-    // Check if it has at least a basic VTT structure
-    const lines = vttContent.split("\n");
-    if (lines.length < 4 || !lines[0].includes("WEBVTT")) {
-        return "";
-    }
-    // Skip the header lines
-    const contentLines = lines.slice(4);
-    // Filter out timestamp lines and empty lines
-    const textLines = [];
-    for (let i = 0; i < contentLines.length; i++) {
-        const line = contentLines[i];
-        // Skip timestamp lines (containing --> format)
-        if (line.includes("-->"))
-            continue;
-        // Skip positioning metadata lines
-        if (line.includes("align:") || line.includes("position:"))
-            continue;
-        // Skip empty lines
-        if (line.trim() === "")
-            continue;
-        // Clean up the line by removing timestamp tags like <00:00:07.759>
-        const cleanedLine = line
-            .replace(/<\d{2}:\d{2}:\d{2}\.\d{3}>|<\/c>/g, "")
-            .replace(/<c>/g, "");
-        if (cleanedLine.trim() !== "") {
-            textLines.push(cleanedLine.trim());
-        }
-    }
-    // Remove duplicate adjacent lines
-    const uniqueLines = [];
-    for (let i = 0; i < textLines.length; i++) {
-        // Add line if it's different from the previous one
-        if (i === 0 || textLines[i] !== textLines[i - 1]) {
-            uniqueLines.push(textLines[i]);
-        }
-    }
-    return uniqueLines.join("\n");
-}
 async function main() {
     const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Weather MCP Server running on stdio");
+    await myServer.connect(transport);
+    console.error('Your MCP server is running on stdio');
 }
 main().catch((error) => {
     console.error("Fatal error in main():", error);
